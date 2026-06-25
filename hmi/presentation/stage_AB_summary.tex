@@ -1,0 +1,250 @@
+\documentclass[11pt]{beamer}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{multirow}
+
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+\title{Coronal-Hole Feature Impact on\\Solar Wind Speed Forecasting}
+\subtitle{Stage A (EUV) and Stage B (HMI) Results --- Full 2010--2020 Dataset}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\frame{\titlepage}
+
+\begin{frame}{Outline}
+\tableofcontents
+\end{frame}
+
+\section{Setup}
+
+\begin{frame}{Question}
+\textbf{Does adding 4-day-lagged coronal-hole features improve XGBoost solar wind speed predictions} over the existing engineered baseline (\texttt{4x3.csv}: L1 plasma lags at $-26/-27/-28$ days, a $2\times3$ lat/lon CH grid at $-4$ to $-7$ days, sunspot number)?
+
+\vspace{0.5cm}
+Two feature sources, evaluated in two stages:
+
+\begin{itemize}
+  \item \textbf{Stage A} --- 193\AA/211\AA\ EUV coronal-hole features. Large sample ($\sim$10 years). Used to \emph{validate the methodology}.
+  \item \textbf{Stage B} --- HMI magnetogram global features (\texttt{R2}, \texttt{energy}, \texttt{entropy}, \texttt{variance}). \textbf{Now an 11-year sample (2010--2020)}, spanning multiple solar-cycle regimes. The \emph{actual question}.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Data}
+\begin{table}
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Source & Cadence & Coverage & Rows \\
+\midrule
+Base target (\texttt{speed}) & hourly & 2010-06 -- 2024-06 & 123{,}456 \\
+EUV (193\AA/211\AA) & 6-hourly & 2010-05 -- 2019-12 & 13{,}229 \\
+HMI (this work) & 6-hourly & 2010-05 -- 2020-12 & 15{,}240 \\
+HSS event catalog & events & 2000 -- 2024 & 519 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.3cm}
+\textbf{Lag convention:} a feature observed at $T_{obs}$ predicts the target at $T_{obs} + 4$ days, consistent with the existing $-4$ to $-28$-day lags already in the baseline. 6-hourly features are forward-filled onto the hourly target grid (48h tolerance cap).
+
+\vspace{0.3cm}
+Model: XGBoost (GPU-trained), chronological CV throughout --- never randomly shuffled. \textbf{All CV splits (within-window and cross-regime) use a 60-day train/test embargo}: training rows within 60 days of a test boundary are dropped, since the lag/merge tolerance window can otherwise let feature data spill a few hours across a fold or regime boundary.
+\end{frame}
+
+\section{Stage A --- EUV (validation)}
+
+\begin{frame}{Stage A: 5-fold time-series CV (full $\sim$10yr period)}
+\begin{table}
+\centering
+\begin{tabular}{lccc}
+\toprule
+Model & RMSE & MAE & $R^2$ \\
+\midrule
+Base only & 82.71 & 64.77 & 0.111 \\
+Base + EUV (lag 4) & 82.01 & 65.47 & 0.121 \\
+27-day recurrence (naive) & 100.52 & 74.39 & $-0.207$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}
+  \item Both XGBoost models comfortably beat the naive 27-day Carrington-recurrence baseline.
+  \item Adding EUV features gives a small RMSE improvement but a slightly worse MAE --- a wash overall, consistent with redundancy against the baseline's existing $-4$ to $-7$-day CH grid features.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Stage A: split by HSS event}
+\begin{table}
+\centering
+\begin{tabular}{lccc}
+\toprule
+& RMSE & MAE & $n$ \\
+\midrule
+HSS event & 84.72 & 65.24 & 32{,}626 \\
+Non-event & 81.88 & 65.58 & 70{,}254 \\
+\bottomrule
+\end{tabular}
+\end{table}
+Out-of-fold predictions, base+EUV model. Roughly comparable error during HSS events vs.\ quiet periods --- consistent with EUV CH information being already well captured by the baseline's own recurrence-style features.
+\end{frame}
+
+\section{Stage B --- HMI (full 11-year dataset)}
+
+\begin{frame}{Stage B: now a real multi-regime test, not a 2-point pilot}
+\begin{alertblock}{Earlier work: this used to be a 2-point pilot}
+The original analysis had only $\sim$1.6 years of HMI data (2010 + 2014). \textbf{All of 2010--2020 has since been processed} --- the full range available in the SDOML HMI zarr archive.
+\end{alertblock}
+\vspace{0.3cm}
+\textbf{12 calendar-year regimes} (2010 partial -- 2021 stray 6-day tail), used for:
+\begin{enumerate}
+  \item Time-series CV \emph{within} the full 2010--2020 window (with 60-day embargo)
+  \item \textbf{Cross-regime holdout}: train on one calendar year, test on a different year --- 110 directed pairs (10 full years $\times$ 9 + 2010 partial-year pairs), each with its own embargo
+\end{enumerate}
+\end{frame}
+
+\begin{frame}{Stage B: regularization (unchanged from earlier work)}
+\begin{alertblock}{Unregularized models overfit badly on small per-regime samples}
+Stage A's hyperparameters (300 trees, depth 6, no regularization), reused naively on individual-year regimes (5--9K rows each), gave train $R^2 \approx 0.99$ with cross-regime test $R^2$ as low as $-1.29$.
+\end{alertblock}
+\vspace{0.3cm}
+\textbf{Fix} (Stage B only): depth 3, \texttt{subsample}/\texttt{colsample\_bytree}=0.7, L1/L2 regularization, early stopping on a chronological validation tail carved from the training portion.
+\vspace{0.2cm}
+\textbf{All numbers on the following slides are from the fixed, regularized, embargoed model.}
+\end{frame}
+
+\begin{frame}{Stage B: within-window time-series CV}
+\begin{table}
+\centering
+\begin{tabular}{lccc}
+\toprule
+Model & RMSE & MAE & $R^2$ \\
+\midrule
+Control (no HMI) & 76.29 & 61.02 & 0.232 \\
+Treatment (+HMI lag 4) & 76.18 & 60.72 & \textbf{0.238} \\
+\bottomrule
+\end{tabular}
+\end{table}
+HMI gives a small but consistent improvement on RMSE, MAE, and $R^2$ within the combined 2010--2020 window.
+\end{frame}
+
+\begin{frame}{Stage B: cross-regime holdout --- the real generalization test}
+\begin{table}
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+& RMSE & MAE & $R^2$ \\
+\midrule
+\multicolumn{4}{l}{\textit{All 110 directed year-pairs:}} \\
+Control & 87.40 & 69.04 & 0.003 \\
+Treatment & 87.96 & 69.59 & $-0.011$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Full-years-only (90 pairs, excl.\ 2010 partial year):}} \\
+Control & 87.46 & 68.78 & $-0.016$ \\
+Treatment & 88.00 & 69.29 & $-0.028$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+\textbf{HMI is very slightly worse, not better}, once tested across the full 11-year solar-cycle range. Treatment beats control on RMSE in only \textbf{69 / 110 (63\%)} of directed year-pairs --- a real but modest edge, far short of the original pilot's ``every comparison'' result.
+\end{frame}
+
+\begin{frame}{Stage B: why did the small pilot look so much better?}
+\begin{itemize}
+  \item The 2010+2014 pilot tested exactly \textbf{2 directed pairs} (2010$\to$2014, 2014$\to$2010). Both happened to favor HMI.
+  \item At 110 pairs, that signal washes out to a 63\% win rate --- better than a coin flip, but not the unanimous result the pilot suggested.
+  \item \textbf{Conclusion}: the original ``HMI helps every single comparison'' finding was very likely a \textbf{small-sample artifact} of an unusually favorable 2-regime test, not a robust effect.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Stage B: which HMI feature actually matters?}
+\begin{columns}
+\column{0.5\textwidth}
+SHAP rank (of 142 total features):
+\begin{table}
+\small
+\begin{tabular}{lc}
+\toprule
+Feature & Rank \\
+\midrule
+\texttt{global\_R2} & \textbf{10} \\
+\texttt{global\_variance} & 50 \\
+\texttt{global\_energy} & 59 \\
+\texttt{global\_entropy} & 128 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\column{0.5\textwidth}
+Correlation vs.\ EUV CH-area:
+\begin{table}
+\small
+\begin{tabular}{lc}
+\toprule
+Feature & $|r|$ \\
+\midrule
+\texttt{R2} & 0.26 \\
+\texttt{energy} & 0.20 \\
+\texttt{variance} & 0.20 \\
+\texttt{entropy} & 0.34 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\end{columns}
+\vspace{0.3cm}
+\texttt{global\_R2} (flux-imbalance ratio) remains by far the most informative HMI feature, same as in the original pilot. All four HMI features remain only weakly correlated with existing EUV CH-area features ($|r|\le0.34$) --- they still carry largely \emph{distinct} information, even though that information doesn't net out to a clear predictive win.
+\end{frame}
+
+\begin{frame}{Stage B: split by HSS event --- a surprising reversal}
+\begin{table}
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+& RMSE during HSS event & RMSE during quiet period \\
+\midrule
+\multicolumn{3}{l}{\textit{Within-window CV:}} \\
+Control & 82.14 & 74.21 \\
+Treatment & 84.15 (\textbf{worse}) & 72.95 (\textbf{better}) \\
+\midrule
+\multicolumn{3}{l}{\textit{Cross-regime holdout (mean over 110 pairs):}} \\
+Control & 95.73 & 81.18 \\
+Treatment & 96.21 (worse) & 81.61 (worse) \\
+\bottomrule
+\end{tabular}
+\end{table}
+\textbf{Unexpected finding}: in the within-window CV, HMI \emph{hurts} during actual high-speed-stream events and \emph{helps} during quiet periods --- the opposite of the physically-motivated expectation (HSS is CH-driven, so HMI should help \emph{most} during HSS events). This reversal does not appear in the cross-regime split (both event types get slightly worse there) --- treat it as a within-window-specific observation, not yet a robust finding.
+\end{frame}
+
+\section{Conclusions}
+
+\begin{frame}{Summary}
+\begin{itemize}
+  \item \textbf{Stage A}: EUV features give a marginal RMSE improvement but not a clean win overall --- consistent with redundancy against the baseline's own CH-grid features.
+  \item \textbf{Stage B is now a real 11-year, 12-regime test} (2010--2020), not a 2-point pilot, using a regularized model and a 60-day train/test embargo on every CV split.
+  \item \textbf{The pilot's ``HMI helps every comparison'' result does not replicate at scale}: within-window CV shows a small genuine edge ($R^2$ 0.232 $\to$ 0.238), but cross-regime holdout is essentially flat to slightly negative (63\% pairwise win rate on RMSE, aggregate $R^2$ slightly worse).
+  \item \texttt{global\_R2} remains the standout HMI feature; \texttt{energy}/\texttt{entropy}/\texttt{variance} remain comparably uninformative.
+  \item A new, unexplained finding: HMI features hurt prediction \emph{during} HSS events and help \emph{between} them, in the within-window CV --- opposite of the physical expectation. Worth investigating further before relying on it.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Next steps}
+\begin{itemize}
+  \item \textbf{Investigate the HSS-event reversal}: why does HMI help during quiet periods but hurt during actual high-speed streams, in the within-window CV but not the cross-regime split? Check whether this is a real effect or an artifact of CV-fold composition.
+  \item Consider sweeping lag days (currently fixed at 4) now that the full multi-year pipeline is validated.
+  \item Investigate why \texttt{energy}/\texttt{entropy}/\texttt{variance} consistently underperform \texttt{R2} across both the pilot and the full dataset --- possibly redundant with existing magnitude-based features, or just noisier.
+  \item HMI coverage stops at 2020 in the current SDOML archive; revisit if/when SDOML adds later years, to extend the multi-regime test further into solar cycle 25.
+\end{itemize}
+\end{frame}
+
+\end{document}
